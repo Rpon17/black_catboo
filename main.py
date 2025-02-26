@@ -7,6 +7,8 @@ from play import Play  # Play 클래스 가져오기
 from skip import Skip  # Skip 클래스 가져오기
 from pause import Pause  # 추가
 
+os.system("ffmpeg -version")
+
 # .env 파일에서 토큰 로드
 load_dotenv()
 bot_token = os.getenv("DISCORD_BOT_TOKEN")
