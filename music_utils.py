@@ -4,11 +4,9 @@ from settings import ydl_opts, ffmpeg_opts
 import asyncio
 
 class MusicPlayer:
-    def __init__(self, bot, song_queue, current_song):
+    def __init__(self, bot, song_queues):
         self.bot = bot
-        self.song_queue = song_queue
-        self.current_song = current_song
-        self.song_queues = {}
+        self.song_queues = song_queues
         self.current_songs = {}
         self.last_messages = {}
 
@@ -45,13 +43,21 @@ class MusicPlayer:
             await self.delete_last_messages(interaction)
             
             guild_id = interaction.guild_id
+            
+            # 음성 채널 연결 확인 및 재연결
+            voice_client = discord.utils.get(self.bot.voice_clients, guild=interaction.guild)
+            if not voice_client or not voice_client.is_connected():
+                if not interaction.user.voice:
+                    raise Exception("음성 채널에 먼저 입장해주세요!")
+                voice_channel = interaction.user.voice.channel
+                voice_client = await voice_channel.connect()
+
             with YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(song_url, download=False)
                 if 'entries' in info:
                     info = info['entries'][0]
                 
                 webpage_url = info.get('webpage_url', None)
-                self.current_song = webpage_url
                 self.current_songs[guild_id] = webpage_url
 
                 audio_url = None
@@ -63,19 +69,31 @@ class MusicPlayer:
                 if not audio_url:
                     raise ValueError("유효한 오디오 URL을 찾을 수 없습니다")
 
-                voice_client = discord.utils.get(self.bot.voice_clients, guild=interaction.guild)
-                if voice_client is None:
-                    voice_channel = interaction.user.voice.channel
-                    voice_client = await voice_channel.connect()
-
                 # 이전 재생이 있다면 중지
                 if voice_client.is_playing():
                     voice_client.stop()
 
                 # 노래 재생
+                def after_fn(error):
+                    if error:
+                        print(f'재생 오류: {error}')
+                    # 노래가 끝나면 다음 곡 재생
+                    async def next_song():
+                        try:
+                            # 새로운 interaction 생성 또는 기존 interaction 재사용
+                            if voice_client and voice_client.is_connected():
+                                await self.check_queue(interaction)
+                        except Exception as e:
+                            print(f"다음 곡 재생 실패: {e}")
+
+                    asyncio.run_coroutine_threadsafe(
+                        next_song(),
+                        self.bot.loop
+                    )
+
                 voice_client.play(
                     discord.FFmpegPCMAudio(audio_url, **ffmpeg_opts),
-                    after=after_callback  # 콜백 함수 설정
+                    after=after_fn  # 콜백 함수 설정
                 )
                 
                 return info.get('title', '알 수 없는 제목')
@@ -90,47 +108,34 @@ class MusicPlayer:
 
     async def check_queue(self, interaction):
         guild_id = interaction.guild_id
-        
-        def after_callback(e):
-            asyncio.run_coroutine_threadsafe(
-                self.check_queue(interaction), 
-                self.bot.loop
-            )
+        if guild_id not in self.song_queues:
+            self.song_queues[guild_id] = []
 
-        # 이전 메시지들 삭제
-        await self.delete_last_messages(interaction)
+        # 음성 채널 연결 확인 및 재연결
+        voice_client = discord.utils.get(self.bot.voice_clients, guild=interaction.guild)
+        if not voice_client or not voice_client.is_connected():
+            try:
+                if voice_client:
+                    await voice_client.disconnect()
+                if not interaction.user.voice:
+                    print("음성 채널 연결 실패: 사용자가 음성 채널에 없음")
+                    return
+                voice_client = await interaction.user.voice.channel.connect()
+            except Exception as e:
+                print(f"음성 채널 연결 실패: {str(e)}")
+                return
 
-        if self.song_queue:
-            next_song = self.song_queue.pop(0)
-            await self.play_song(interaction, next_song, after_callback)
-        else:
-            current = self.current_song
-            if current:
-                video_id = self.extract_video_id(current)
-                if video_id:
+        try:
+            if self.song_queues[guild_id]:  # 대기열에 곡이 있으면
+                next_song = self.song_queues[guild_id].pop(0)
+                title = await self.play_song(interaction, next_song)
+                if title:
                     try:
-                        # YouTube Mix 플레이리스트 URL
-                        mix_url = f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}"
-                        with YoutubeDL({'format': 'bestaudio/best', 
-                                      'quiet': True,
-                                      'noplaylist': False,
-                                      'extract_flat': False,
-                                      'playlist_items': '1-4'  # 처음 4개 항목만 가져오기
-                                     }) as ydl:
-                            info = ydl.extract_info(mix_url, download=False)
-                            
-                            # entries가 있고 길이가 충분한지 확인
-                            if 'entries' in info and len(info['entries']) >= 4:
-                                # 세 번째 곡 선택 (0번이 현재곡, 3번이 세 번째 추천곡)
-                                recommended_song = info['entries'][3]['webpage_url']
-                                await self.play_song(interaction, recommended_song, after_callback)
-                                return
-                                
-                            await self.send_message(interaction, "캣부가 다음곡을 준비중입니다 🎵")
-                    except Exception as e:
-                        print(f"추천 곡 오류: {str(e)}")
-                        await self.send_message(interaction, "캣부가 다음곡을 준비중입니다 🎵")
-                else:
-                    await self.send_message(interaction, "캣부가 다음곡을 준비중입니다 🎵")
+                        await self.send_message(interaction, f"다음 곡 재생 중: {title} 🎶")
+                    except:
+                        print(f"재생 중인 곡: {title}")
             else:
-                await self.send_message(interaction, "캣부가 다음곡을 준비중입니다 🎵") 
+                # 대기열이 비었을 때는 아무 것도 하지 않음
+                pass
+        except Exception as e:
+            print(f"대기열 처리 중 오류: {str(e)}") 
