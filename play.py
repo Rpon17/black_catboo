@@ -4,7 +4,8 @@ from discord import app_commands
 from yt_dlp import YoutubeDL
 import asyncio
 import traceback
-from settings import ydl_opts, ffmpeg_opts  # 설정 파일에서 가져옴
+import re
+from settings import ydl_opts, ffmpeg_opts
 from music_utils import MusicPlayer
 
 class Play(commands.Cog):
@@ -12,14 +13,41 @@ class Play(commands.Cog):
         self.bot = bot
         self.song_queues = song_queues
         self.music_player = MusicPlayer(bot, song_queues)
-        print("[✅ Play Cog 로드 완료]")  # Cog가 정상적으로 로드되었는지 확인
+        print("[✅ Play Cog 로드 완료]")
 
     @app_commands.command(name="재생", description="캣부가 노래합니다.")
-    async def play(self, interaction: discord.Interaction, 제목: str):
+    async def play(self, interaction: discord.Interaction, 입력값: str):
         """Slash 명령어로 노래를 재생하거나 대기열에 추가합니다."""
-        print(f"[🎵 명령 실행] /재생 {제목} (서버: {interaction.guild.name})")
+        print(f"[🎵 명령 실행] /재생 {입력값} (서버: {interaction.guild.name})")
         await interaction.response.defer()
+        await self.process_play_request(interaction, 입력값)
 
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        """유튜브 링크 감지 후 자동 재생"""
+        if message.author.bot:
+            return
+        
+        youtube_url_pattern = re.compile(r"(https?://)?(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)/")
+        if youtube_url_pattern.match(message.content):
+            await message.channel.send(f"🎵 감지된 유튜브 링크! `{message.content}` 를 재생할게요!")
+
+            # 가짜 interaction 생성 (음성 채널 정보 포함)
+            class FakeInteraction:
+                def __init__(self, user, guild, channel):
+                    self.user = user
+                    self.guild = guild
+                    self.channel = channel
+                    self.guild_id = guild.id
+                    self.response = self  # response.defer()가 가능하도록 추가
+                async def defer(self):
+                    pass  # 응답 필요 없음
+
+            fake_interaction = FakeInteraction(message.author, message.guild, message.channel)
+            await self.process_play_request(fake_interaction, message.content)
+
+    async def process_play_request(self, interaction, 입력값):
+        """공통 재생 처리 함수"""
         if not interaction.user.voice:
             await self.music_player.send_message(interaction, "음성 채널에 먼저 입장해주세요!")
             return
@@ -28,7 +56,10 @@ class Play(commands.Cog):
         if guild_id not in self.song_queues:
             self.song_queues[guild_id] = []
 
-        song_url = f"ytsearch:{제목}"
+        # 🔹 유튜브 & 유튜브 뮤직 URL 확인
+        youtube_url_pattern = re.compile(r"(https?://)?(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)/")
+        song_url = 입력값 if youtube_url_pattern.match(입력값) else f"ytsearch:{입력값}"
+
         print(f"[🔍 검색] {song_url}")
 
         try:
@@ -49,7 +80,7 @@ class Play(commands.Cog):
 
             if voice_client.is_playing():
                 self.song_queues[guild_id].append(song_url)
-                await self.music_player.send_message(interaction, f"대기열에 추가됨: {제목}")
+                await self.music_player.send_message(interaction, f"대기열에 추가됨: {입력값}")
             else:
                 try:
                     title = await self.music_player.play_song(interaction, song_url)
@@ -63,45 +94,5 @@ class Play(commands.Cog):
             print(f"[❌ 오류 발생] {error_msg}")
             await self.music_player.send_message(interaction, error_msg)
 
-    async def check_queue(self, interaction):
-        """대기열 확인 및 추천 곡 재생."""
-        print("[🔄 대기열 확인]")
-        await self.music_player.check_queue(interaction)
-
-    async def play_recommended_song(self, interaction, song_url):
-        """유튜브 추천 곡을 재생합니다."""
-        print(f"[🎵 추천 곡 재생 요청] {song_url}")
-        try:
-            voice_client = discord.utils.get(self.bot.voice_clients, guild=interaction.guild)
-            if not voice_client or not voice_client.is_connected():
-                if not interaction.user.voice:
-                    raise Exception("음성 채널에 먼저 입장해주세요!")
-                print("[🔗 음성 채널 연결 중...]")
-                voice_client = await interaction.user.voice.channel.connect()
-
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(song_url, download=False)
-                print(f"🎵 유튜브 다운로드 정보: {info}")
-
-                if 'entries' in info and len(info['entries']) > 0:
-                    info = info['entries'][0]
-                    audio_url = next((fmt['url'] for fmt in info.get('formats', []) if fmt.get('acodec') != 'none' and fmt.get('vcodec') == 'none'), None)
-                    if not audio_url:
-                        raise ValueError("추천 곡의 유효한 오디오 URL을 찾을 수 없습니다.")
-
-                    print(f"🔗 재생할 오디오 URL: {audio_url}")
-
-                    def after_playback(error):
-                        if error:
-                            print(f"[❌ 재생 중 오류] {repr(error)}\n{traceback.format_exc()}")
-                        print("[🎵 노래가 끝났습니다] 다음 곡 확인 중...")
-
-                    voice_client.play(discord.FFmpegPCMAudio(audio_url, **ffmpeg_opts), after=after_playback)
-                    await interaction.followup.send(f"추천 곡 재생 중: {info.get('title', '알 수 없는 제목')} 🎶")
-                else:
-                    await interaction.followup.send("추천 곡 목록이 비어 있습니다. 다른 곡을 추가해주세요.")
-
-        except Exception as e:
-            error_msg = f"추천 곡을 재생할 수 없습니다: {repr(e)}\n{traceback.format_exc()}"
-            print(f"[❌ 오류 발생] {error_msg}")
-            await interaction.followup.send(error_msg)
+async def setup(bot):
+    await bot.add_cog(Play(bot, {}))
