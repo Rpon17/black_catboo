@@ -7,7 +7,13 @@ from play import Play  # Play 클래스 가져오기
 from skip import Skip  # Skip 클래스 가져오기
 from pause import Pause  # 추가
 
-os.system("ffmpeg -version")
+import shutil
+
+ffmpeg_path = shutil.which("ffmpeg")
+if ffmpeg_path:
+    print(f"✅ ffmpeg is installed at: {ffmpeg_path}")
+else:
+    print("❌ ffmpeg is NOT installed")
 
 # .env 파일에서 토큰 로드
 load_dotenv()
@@ -90,4 +96,6 @@ async def on_voice_state_update(member, before, after):
                 if guild_id in song_queues:
                     song_queues[guild_id] = []
 
-asyncio.run(main())
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
