@@ -8,9 +8,18 @@ ydl_opts = {
     'nocheckcertificate': True,
     'quiet': True,
     'default_search': 'ytsearch',
-    'source_address': '0.0.0.0'
-}
+    'source_address': '0.0.0.0',
 
+    # 🔹 YouTube 인증을 위한 쿠키 추가
+    'cookies': 'cookies.txt',
+
+    # 🔹 ffmpeg 자동 병합 활성화
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'mp3',
+        'preferredquality': '192',
+    }]
+}
 
 ffmpeg_opts = {
     'executable': 'ffmpeg',
