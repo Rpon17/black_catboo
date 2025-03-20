@@ -11,7 +11,7 @@ ydl_opts = {
     'source_address': '0.0.0.0',
 
     # 🔹 YouTube 인증을 위한 쿠키 추가
-    'cookies': 'cookies.txt',
+    'cookiefile': 'cookies.txt',
 
     # 🔹 ffmpeg 자동 병합 활성화
     'postprocessors': [{
